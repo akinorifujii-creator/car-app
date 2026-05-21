@@ -1,0 +1,6 @@
+anthropic
+pandas
+matplotlib
+faiss-cpu
+sentence-transformers
+streamlit
