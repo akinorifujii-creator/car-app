@@ -4,3 +4,5 @@ matplotlib
 faiss-cpu
 sentence-transformers
 streamlit
+torch
+torchvision
