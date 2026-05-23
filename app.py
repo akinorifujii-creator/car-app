@@ -38,6 +38,54 @@ def translate_to_english(question: str, client: anthropic.Anthropic) -> str:
     )
     return message.content[0].text.strip()
 
+def classify_question(question: str, client: anthropic.Anthropic) -> str:
+    """質問の種類を判定する（集計系 or 検索系）"""
+    message = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=10,
+        messages=[{
+            "role": "user",
+            "content": f"""以下の質問は「集計系」と「検索系」のどちらですか？
+集計系: 件数・平均・合計・最大・最小など数値を求める質問
+検索系: 特定の車の情報を探す質問
+
+質問: {question}
+
+「集計系」か「検索系」の一言だけ答えてください。"""
+        }]
+    )
+    result = message.content[0].text.strip()
+    return "集計系" if "集計" in result else "検索系"
+
+
+def get_aggregation_context(question: str, df: pd.DataFrame, client: anthropic.Anthropic) -> str:
+    """集計系の質問にはpandasで計算した結果を渡す"""
+    message = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=200,
+        messages=[{
+            "role": "user",
+            "content": f"""以下の質問に答えるために必要なpandasのコードを1行だけ書いてください。
+DataFrameの変数名はdfです。
+コードだけ答えてください。```は絶対に使わないでください。
+
+利用可能な列: {list(df.columns)}
+
+質問: {question}"""
+        }]
+    )
+    code = message.content[0].text.strip()
+    # マークダウンを除去
+    code = code.replace("```python", "").replace("```", "").strip()
+    print(f"生成されたコード: {code}")
+    
+    try:
+        result = eval(code)
+        return f"質問に関連する集計結果:\n{result}"
+    except Exception as e:
+        return f"集計エラー: {str(e)}"
+
+
 def search(query: str, top_k: int = 5) -> list:
     """FAISSで関連ドキュメントを検索する"""
     query_vector = model.encode([query])
@@ -76,17 +124,25 @@ with tab1:
 
         st.chat_message("user").write(question)
 
-        # 日本語→英語に変換
-        english_query = translate_to_english(question, client)
-        st.sidebar.write(f"検索クエリ: {english_query}")
+        # 質問の種類を判定
+        question_type = classify_question(question, client)
+        st.sidebar.write(f"質問タイプ: {question_type}")
 
-        # RAGで関連データを検索
-        related_docs = search(english_query)
-        context = "\n".join(related_docs)
+        if question_type == "集計系":
+            # pandasで集計して渡す
+            context = get_aggregation_context(question, df, client)
+        else:
+            # RAGで関連データを検索
+            english_query = translate_to_english(question, client)
+            st.sidebar.write(f"検索クエリ: {english_query}")
+            related_docs = search(english_query)
+            context = "\n".join(related_docs)
 
         # システムプロンプト（関連データだけ渡す）
+        print(f"contextの中身: {context}")
         system_prompt = f"""あなたは車両データの専門家アシスタントです。
 以下の関連データを元に質問に答えてください。
+過去の会話より関連データを信頼してください。
 回答は日本語で簡潔にわかりやすくしてください。
 
 関連データ:
